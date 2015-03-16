@@ -1,0 +1,140 @@
+# 	Load the required packages:
+> library(twitteR)
+             > library("ROAuth")
+> library(wordcloud)
+> library(RColorBrewer)
+> library(plyr)
+> library(ggplot2)
+> library(sentiment)
+
+# Twitter  Authentication:
+
+> download.file(url="http://curl.haxx.se/ca/cacert.pem",destfile="cacert.pem")
+cred <- OAuthFactory$new(consumerKey='XXXXXXXX',
++                          consumerSecret='XXXXXXXXX',
++                          requestURL='https://api.twitter.com/oauth/request_token',
++                          accessURL='https://api.twitter.com/oauth/access_token',
++                          authURL='https://api.twitter.com/oauth/authorize')
+> cred$handshake(cainfo="cacert.pem")
+> save(cred, file="twitter authentication.Rdata")
+> load("twitter authentication.Rdata")
+> registerTwitterOAuth(cred)
+
+# Retrieve 1500 tweets with search string ‘marriage’ in English language:
+
+> marriage_tweets = searchTwitter("#marriage", n=1500, lang="en",  cainfo="cacert.pem")
+
+# Extract Text from the tweets:
+> marriage.text = laply(marriage_tweets, function(t) t$getText() )
+
+# Hu and Liu’s “opinion lexicon” categorizes around 6,800 words as positive or negative and can be #downloaded from Bing Liu’s web site: http://www.cs.uic.edu/~liub/FBS/opinion-lexicon-English.rar
+> pos = scan('C:/Users/divya/R/win-library/3.1/data/positive-words.txt',
++                   what='character', comment.char=';')
+> neg = scan('C:/Users/divya/R/win-library/3.1/data/negative-words.txt',
++                   what='character', comment.char=';')
+
+# Text Cleaning:
+> marriage.text = gsub("(RT|via)((?:\\b\\W*@\\w+)+)", "", marriage.text)
+> marriage.text = gsub("@\\w+", "", marriage.text)
+> marriage.text = gsub("[[:punct:]]", "", marriage.text)
+> marriage.text = gsub("[[:digit:]]", "", marriage.text)
+> marriage.text = gsub("http\\w+", "", marriage.text)
+> marriage.text = gsub("[ \t]{2,}", "", marriage.text)
+> marriage.text = gsub("^\\s+|\\s+$", "", marriage.text)
+> try.error = function(x)
++ {
++     # create missing value
++     y = NA
++     # tryCatch error
++     try_error = tryCatch(tolower(x), error=function(e) e)
++     # if not an error
++     if (!inherits(try_error, "error"))
++         y = tolower(x)
++     # result
++     return(y)
++ }
+> marriage.text = sapply(marriage.text, try.error)
+> marriage.text = marriage.text[!is.na(marriage.text)]
+> names(marriage.text) = NULL
+
+#  Using Bayes’ Algorithm to classify text according to emotions such as anger, disgust,             #  fear, joy, sadness, surprise:
+
+> class_emo = classify_emotion(marriage.text, algorithm="bayes", prior=1.0)
+> emotion = class_emo[,7]
+> emotion[is.na(emotion)] = "unknown"
+
+# Classify text according to polarity that is positive, negative and neutral:
+> class_pol = classify_polarity(marriage.text, algorithm="bayes")
+polarity = class_pol[,4]
+
+# Create a data frame from the results:
+> sent_df = data.frame(text=marriage.text, emotion=emotion, polarity=polarity, stringsAsFactors=FALSE)
+> sent_df = within(sent_df, emotion <- factor(emotion, levels=names(sort(table(emotion), decreasing=TRUE))))
+
+#  Plot the results: Classification by emotions:
+
+>  ggplot(sent_df, aes(x=emotion)) +
++     geom_bar(aes(y=..count.., fill=emotion)) +
++     scale_fill_brewer(palette="Dark2") +
++     labs(x="emotion categories", y="number of tweets") +
++     ggtitle("Sentiment Analysis of Tweets about Marriage\n(classification by emotion)")
+
+#  Classification by polarity:
+>  ggplot(sent_df, aes(x=polarity)) +
++     geom_bar(aes(y=..count.., fill=polarity)) +
++     scale_fill_brewer(palette="RdGy") +
++     labs(x="polarity categories", y="number of tweets") +
++     ggtitle("Sentiment Analysis of Tweets about Marriage\n(classification by polarity)")
+
+#  Segregate words according to emotions and visualize using a comparison cloud.
+>  emo.docs = removeWords(emo.docs, stopwords("english")) 
+> corpus = Corpus(VectorSource(emo.docs))
+> tdm = TermDocumentMatrix(corpus)
+> tdm = as.matrix(tdm)
+> colnames(tdm) = emos
+> # comparison word cloud
+> comparison.cloud(tdm, colors = brewer.pal(nemo, "Dark2"),
++                  scale = c(3,.5), random.order = FALSE, title.size = 1.5)
+
+# Using Jeffrey Breen’s sentiment scoring algorithm to score tweets:
+> score.sentiment = function(sentences, pos, neg, .progress='none')
++ {
++     require(plyr)
++     require(stringr)
++     # we got a vector of sentences. plyr will handle a list
++     # or a vector as an "l" for us
++     # we want a simple array of scores back, so we use
++     # "l" + "a" + "ply" = "laply":
++     scores = laply(sentences, function(sentence, pos, neg) {
++         # clean up sentences with R's regex-driven global substitute, gsub():
++         sentence = gsub('[[:punct:]]', '', sentence)
++         sentence = gsub('[[:cntrl:]]', '', sentence)
++         sentence = gsub('\\d+', '', sentence)
++         # and convert to lower case:
++         sentence = tolower(sentence)
++         # split into words. str_split is in the stringr package
++         word.list = str_split(sentence, '\\s+')
++         # sometimes a list() is one level of hierarchy too much
++         words = unlist(word.list)
++         # compare our words to the dictionaries of positive & negative terms
++         pos.matches = match(words, pos)
++         neg.matches = match(words, neg)
++         # match() returns the position of the matched term or NA
++         # we just want a TRUE/FALSE:
++         pos.matches = !is.na(pos.matches)
++         neg.matches = !is.na(neg.matches)
++         # and conveniently enough, TRUE/FALSE will be treated as 1/0 by sum():
++         score = sum(pos.matches) - sum(neg.matches)
++         return(score)
++     }, pos, neg, .progress=.progress )
++     scores.df = data.frame(score=scores, text=sentences)
++     return(scores.df)
++ }
+> marriage.scores = score.sentiment(marriage.text, pos,
++                                neg, .progress='text')
+
+# Plot a histogram of sentiment scores:
+> hist(marriage.scores$score)
+
+
+
